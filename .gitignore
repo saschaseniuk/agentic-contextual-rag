@@ -1,0 +1,9 @@
+output.txt
+node_modules
+dist
+.cursor
+.mastra
+.env.development
+.env
+*.db
+*.db-*
