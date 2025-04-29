@@ -1,69 +1,26 @@
 // src/rag/contextualizer.ts
 import { TextChunk, ContextualizedChunk, ContextualizerOptions, SourceDocument } from '../lib/types';
-import { generateText, createEmbedding } from '../lib/vercelAI';
-import { GoogleGenAI } from '@google/genai';
+import { generateText, createEmbedding, cacheDocument } from '../lib/vercelAI';
 import { config } from '../lib/config';
 
 // Cache für die Kontextualisierung, um wiederholte Anfragen zu vermeiden
 const contextCache = new Map<string, string>();
 
-// Google GenAI Client für direkten API-Zugriff
-const googleGenAI = new GoogleGenAI({ apiKey: config.google.apiKey });
-
 // Cache für Dokument-Caching-IDs
 const documentCacheMap = new Map<string, string>();
 
-// Hole die Modellnamen aus der Konfiguration (die aus .env geladen wird)
-const GENERATION_MODEL = config.google.models.generation;
-const CACHING_MODEL = config.google.models.generation;
+// Minimale Dokumentgröße für Caching (laut Google Gemini API)
+const MIN_TOKENS_FOR_CACHING = 4096;
 
 /**
- * Erstellt einen Cache-Eintrag für ein ganzes Dokument
- * @param document Das zu cachende Dokument
- * @returns Die Cache-ID, die für die Generierung von Kontext verwendet werden kann
+ * Schätzt die Anzahl der Tokens in einem Text (grobe Schätzung)
+ * @param text Der zu schätzende Text
+ * @returns Die geschätzte Anzahl der Tokens
  */
-export async function cacheDocument(document: SourceDocument): Promise<string | null> {
-  try {
-    // Prüfe, ob das Dokument bereits im Cache ist
-    const cacheKey = `${document.source}-${document.content.substring(0, 100)}`;
-    if (documentCacheMap.has(cacheKey)) {
-      return documentCacheMap.get(cacheKey)!;
-    }
-    
-    // Das neue SDK verwendet einen anderen Ansatz für Caching
-    // Wir verwenden das in der config definierte Modell
-    const modelName = CACHING_MODEL;
-    
-    console.log(`Erstelle Cache-Eintrag für Dokument "${document.source}" mit Modell ${modelName}`);
-    
-    // Erstelle Cache-Eintrag mit dem neuen SDK
-    const cache = await googleGenAI.caches.create({
-      model: modelName,
-      config: {
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `<document>\n${document.content}\n</document>` }],
-          }
-        ],
-        // TTL in Sekunden (1 Stunde)
-        ttlSeconds: 60 * 60
-      }
-    });
-    
-    // Speichere die Cache-ID für spätere Verwendung
-    if (cache && cache.name) {
-      documentCacheMap.set(cacheKey, cache.name);
-      console.log(`Dokument gecached mit ID: ${cache.name}`);
-      return cache.name;
-    }
-    
-    console.warn('Dokument-Caching fehlgeschlagen: Keine Cache-ID erhalten');
-    return null;
-  } catch (error) {
-    console.error('Fehler beim Caching des Dokuments:', error);
-    return null;
-  }
+function estimateTokenCount(text: string): number {
+  // Einfache Faustregel: 1 Token ≈ ~4 Zeichen für englischen Text
+  // Für andere Sprachen kann dies variieren
+  return Math.ceil(text.length / 4);
 }
 
 /**
@@ -96,7 +53,7 @@ export async function contextualizeChunk(
 
 /**
  * Verarbeitet mehrere Chunks eines Dokuments parallel
- * Nutzt das gecachte Dokument für effiziente Kontextualisierung
+ * Nutzt das gecachte Dokument für effiziente Kontextualisierung, wenn möglich
  */
 export async function contextualizeDocumentChunks(
   document: SourceDocument,
@@ -104,8 +61,32 @@ export async function contextualizeDocumentChunks(
   options: ContextualizerOptions = config.rag.contextualizer,
   batchSize = 5 // Begrenzt die Anzahl der gleichzeitigen API-Anfragen
 ): Promise<ContextualizedChunk[]> {
-  // Cache das gesamte Dokument, wenn möglich
-  const documentCacheId = await cacheDocument(document);
+  // Cache das gesamte Dokument, wenn es groß genug ist
+  let documentCacheId: string | null = null;
+  
+  // Schätzt die Anzahl der Tokens im Dokument
+  const estimatedTokens = estimateTokenCount(document.content);
+  
+  if (estimatedTokens >= MIN_TOKENS_FOR_CACHING) {
+    console.log(`Dokument "${document.source}" hat schätzungsweise ${estimatedTokens} Tokens, versuche Caching...`);
+    // Prüfe, ob das Dokument bereits im Cache ist
+    const cacheKey = `${document.source}-${document.content.substring(0, 100)}`;
+    
+    if (documentCacheMap.has(cacheKey)) {
+      documentCacheId = documentCacheMap.get(cacheKey)!;
+      console.log(`Dokument aus Cache geladen: ${documentCacheId}`);
+    } else {
+      // Versuche das Dokument zu cachen
+      documentCacheId = await cacheDocument(document.content);
+      
+      // Wenn erfolgreich, speichere die ID im Cache
+      if (documentCacheId) {
+        documentCacheMap.set(cacheKey, documentCacheId);
+      }
+    }
+  } else {
+    console.log(`Dokument "${document.source}" zu klein für Caching (${estimatedTokens} Tokens < ${MIN_TOKENS_FOR_CACHING})`);
+  }
   
   return contextualizeChunks(chunks, documentCacheId, options, batchSize);
 }
@@ -156,16 +137,15 @@ async function generateContextSummary(
   }
   
   try {
-    let summary: string;
+    let prompt: string;
+    let generateOptions: { temperature: number; maxOutputTokens: number; cachedContent?: string } = {
+      temperature,
+      maxOutputTokens: maxTokens
+    };
     
     if (documentCacheId) {
       // Verwende das gecachte Dokument für die Kontextualisierung
-      const model = googleGenAI.models.getGenerativeModel({
-        model: GENERATION_MODEL
-      });
-      
-      // Erstelle einen Prompt für die Kontextualisierung
-      const promptWithCachedDocument = `
+      prompt = `
 Hier ist der Chunk, den wir im Kontext des gesamten Dokuments situieren möchten:
 <chunk>
 ${text}
@@ -180,20 +160,11 @@ Die Zusammenfassung sollte:
 
 Antworte nur mit der prägnanten Zusammenfassung und nichts anderem.`;
       
-      // Generiere die Zusammenfassung mit dem gecachten Dokument
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: promptWithCachedDocument }] }],
-        generationConfig: {
-          temperature,
-          maxOutputTokens: maxTokens,
-          cachedContent: documentCacheId
-        }
-      });
-      
-      summary = result.response.text();
+      // Füge die Caching-ID hinzu, wenn vorhanden
+      generateOptions.cachedContent = documentCacheId;
     } else {
       // Fallback: Erstelle einen Prompt ohne gecachtes Dokument
-      const prompt = `
+      prompt = `
 Du bist ein Experte für die Erstellung von präzisen, kompakten Zusammenfassungen von Textausschnitten.
 Deine Aufgabe ist es, eine kurze, informative Zusammenfassung des folgenden Textausschnitts zu erstellen.
 Die Zusammenfassung sollte:
@@ -211,13 +182,10 @@ ${text}
 """
 
 Erstelle eine prägnante Zusammenfassung, die mit einer kurzen Überschrift beginnt:`;
-
-      // Generiere die Zusammenfassung mit Gemini über die Standard-Methode
-      summary = await generateText(prompt, {
-        temperature,
-        maxOutputTokens: maxTokens,
-      });
     }
+    
+    // Generiere die Zusammenfassung mit den entsprechenden Optionen
+    const summary = await generateText(prompt, generateOptions);
     
     // Speichere die Zusammenfassung im Cache
     contextCache.set(cacheKey, summary);

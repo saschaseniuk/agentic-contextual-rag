@@ -12,13 +12,37 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../../');
 
 export const config = {
-  // Datenbankeinstellungen
+  // Datenbankeinstellungen für PostgreSQL
   database: {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432', 10),
     name: process.env.DB_NAME || 'rag_db',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || 'postgres',
+  },
+  
+  // Einstellungen für Elasticsearch
+  elasticsearch: {
+    node: process.env.ES_NODE || 'http://localhost:9200',
+    // Optionale Authentifizierung
+    auth: process.env.ES_USERNAME && process.env.ES_PASSWORD ? {
+      username: process.env.ES_USERNAME,
+      password: process.env.ES_PASSWORD
+    } : undefined,
+    // Index-Name
+    index: process.env.ES_INDEX || 'contextual_documents',
+    // Spezialisierte Sucheinstellungen
+    search: {
+      minScore: parseFloat(process.env.ES_MIN_SCORE || '0.1'),
+      // Standardmäßig erweiterte Suche verwenden
+      useAdvanced: process.env.ES_USE_ADVANCED !== 'false',
+      // Standardgewichtungen für Suchfelder
+      boosts: {
+        contextualized_content: 2.0,
+        context_summary: 1.5,
+        content: 1.0
+      }
+    }
   },
   
   // Google API Einstellungen
@@ -61,6 +85,16 @@ export const config = {
     paths: {
       // Pfad zum Datenverzeichnis
       dataDir: process.env.DATA_DIR || path.join(rootDir, 'data'),
+    },
+    
+    // Retrieval-Einstellungen
+    retrieval: {
+      // Anzahl der Ergebnisse aus jeder Suchmodalität
+      topK: parseInt(process.env.RETRIEVAL_TOP_K || '5', 10),
+      // Ob Ergebnisse aus verschiedenen Quellen kombiniert werden sollen
+      combineSources: process.env.COMBINE_SEARCH_RESULTS !== 'false',
+      // Wenn true, wird BM25 und Vektorsuche in einem einzigen hybriden Durchgang kombiniert
+      hybridSearch: process.env.HYBRID_SEARCH === 'true',
     }
   }
 };

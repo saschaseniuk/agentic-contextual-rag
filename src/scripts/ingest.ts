@@ -7,8 +7,45 @@ import { chunkText } from '../rag/chunking';
 import { contextualizeDocumentChunks } from '../rag/contextualizer';
 import { DbClient } from '../db/client';
 import { DocumentsStore } from '../db/schema';
-import { testBM25Functionality, configureBM25Tokenizer } from '../rag/tokenizer.config';
-import { SourceDocument } from '../lib/types';
+import { ESClient } from '../db/elasticsearch/client';
+import { DOCUMENTS_INDEX, setupDocumentsIndex } from '../db/elasticsearch/indices';
+import { elasticsearchClient } from '../db/elasticsearch/client';
+import { SourceDocument, ContextualizedChunk } from '../lib/types';
+
+/**
+ * Speichert einen kontextualisierten Chunk in Elasticsearch
+ */
+async function saveToElasticsearch(chunk: ContextualizedChunk): Promise<string> {
+  try {
+    const {
+      source,
+      content,
+      contextSummary,
+      contextualizedContent,
+      chunkIndex,
+      metadata
+    } = chunk;
+
+    // Erstelle das Dokument für Elasticsearch
+    const response = await elasticsearchClient.index({
+      index: DOCUMENTS_INDEX,
+      document: {
+        source,
+        content,
+        context_summary: contextSummary,
+        contextualized_content: contextualizedContent,
+        chunk_index: chunkIndex,
+        metadata
+      },
+      refresh: true // Stelle sicher, dass das Dokument sofort in der Suche verfügbar ist
+    });
+
+    return response._id;
+  } catch (error) {
+    console.error('Fehler beim Speichern des Chunks in Elasticsearch:', error);
+    throw error;
+  }
+}
 
 /**
  * Hauptfunktion zum Laden und Verarbeiten von Markdown-Dateien
@@ -17,37 +54,56 @@ async function ingestMarkdownFiles() {
   try {
     console.log('Starte Ingest-Prozess für Markdown-Dateien...');
     
-    // Teste die Datenbankverbindung
-    const dbConnected = await DbClient.testConnection();
-    if (!dbConnected) {
-      console.error('Datenbankverbindung konnte nicht hergestellt werden.');
+    // 1. Teste die Datenbankverbindungen
+    console.log('Teste Datenbankverbindungen...');
+    
+    // PostgreSQL testen
+    const pgConnected = await DbClient.testConnection();
+    if (!pgConnected) {
+      console.error('PostgreSQL-Verbindung konnte nicht hergestellt werden.');
       process.exit(1);
     }
+    console.log('✅ PostgreSQL-Verbindung erfolgreich');
     
-    // Prüfe das Datenbankschema
+    // Elasticsearch testen
+    const esConnected = await ESClient.testConnection();
+    if (!esConnected) {
+      console.error('Elasticsearch-Verbindung konnte nicht hergestellt werden.');
+      process.exit(1);
+    }
+    console.log('✅ Elasticsearch-Verbindung erfolgreich');
+    
+    // 2. Prüfe das PostgreSQL-Schema
     const schemaValid = await DocumentsStore.verifySchema();
     if (!schemaValid) {
-      console.error('Das Datenbankschema entspricht nicht den Erwartungen.');
+      console.error('Das PostgreSQL-Schema entspricht nicht den Erwartungen.');
       process.exit(1);
     }
+    console.log('✅ PostgreSQL-Schema ist gültig');
     
-    // Teste die BM25-Funktionalität
-    const bm25Available = await testBM25Functionality();
-    if (bm25Available) {
-      console.log('BM25-Funktionalität ist verfügbar.');
-      await configureBM25Tokenizer({ language: 'german' });
+    // 3. Stelle sicher, dass der Elasticsearch-Index existiert
+    console.log('Prüfe Elasticsearch-Index...');
+    const indexExists = await ESClient.indexExists(DOCUMENTS_INDEX);
+    if (!indexExists) {
+      console.log(`Index ${DOCUMENTS_INDEX} existiert nicht, wird erstellt...`);
+      const indexCreated = await setupDocumentsIndex();
+      if (!indexCreated) {
+        console.error('Fehler beim Erstellen des Elasticsearch-Index.');
+        process.exit(1);
+      }
+      console.log(`✅ Index ${DOCUMENTS_INDEX} erfolgreich erstellt`);
     } else {
-      console.warn('BM25-Funktionalität ist nicht verfügbar. Das System wird ohne BM25-Vektoren arbeiten.');
+      console.log(`✅ Index ${DOCUMENTS_INDEX} existiert bereits`);
     }
     
-    // Lade die Markdown-Dateien aus dem Datenverzeichnis
+    // 4. Lade die Markdown-Dateien aus dem Datenverzeichnis
     const files = await loadMarkdownFiles(config.rag.paths.dataDir);
     console.log(`${files.length} Markdown-Dateien gefunden.`);
     
-    // Verarbeite jede Datei
+    // 5. Verarbeite jede Datei
     let totalChunks = 0;
     for (const file of files) {
-      console.log(`Verarbeite Datei: ${file.source}`);
+      console.log(`\nVerarbeite Datei: ${file.source}`);
       
       // Teile den Inhalt in Chunks
       const chunks = chunkText(file);
@@ -57,13 +113,19 @@ async function ingestMarkdownFiles() {
       console.log('Erstelle Kontextualisierungen und Embeddings mit Document Caching...');
       const contextualizedChunks = await contextualizeDocumentChunks(file, chunks);
       
-      // Speichere die kontextualisierten Chunks in der Datenbank
-      console.log('Speichere in der Datenbank...');
+      // Speichere die kontextualisierten Chunks in beiden Datenbanken
+      console.log('Speichere in PostgreSQL und Elasticsearch...');
+      
       for (const chunk of contextualizedChunks) {
-        if (bm25Available) {
-          await DocumentsStore.saveChunkWithBM25(chunk);
-        } else {
-          await DocumentsStore.saveContextualizedChunk(chunk);
+        try {
+          // 1. Speichere in Elasticsearch
+          const esId = await saveToElasticsearch(chunk);
+          
+          // 2. Speichere in PostgreSQL mit Referenz auf Elasticsearch-ID
+          await DocumentsStore.saveContextualizedChunkWithESRef(chunk, esId);
+          
+        } catch (error) {
+          console.error(`Fehler beim Speichern von Chunk ${chunk.chunkIndex}:`, error);
         }
       }
       
@@ -71,7 +133,7 @@ async function ingestMarkdownFiles() {
       console.log(`Datei erfolgreich verarbeitet: ${file.source}`);
     }
     
-    console.log(`Ingest-Prozess abgeschlossen. ${totalChunks} Chunks verarbeitet und in der Datenbank gespeichert.`);
+    console.log(`\nIngest-Prozess abgeschlossen. ${totalChunks} Chunks verarbeitet und in beiden Datenbanken gespeichert.`);
   } catch (error) {
     console.error('Fehler im Ingest-Prozess:', error);
     process.exit(1);

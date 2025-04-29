@@ -11,9 +11,7 @@ console.log(`Verwende folgende Google AI Modelle:
 - Embedding: ${EMBEDDING_MODEL}`);
 
 // Konfiguriere die Google Generative AI mit dem API-Key
-export const googleAI = new GoogleGenAI({
-  apiKey: config.google.apiKey
-});
+export const googleAI = new GoogleGenAI(config.google.apiKey);
 
 /**
  * Generiert Text mit dem Gemini-Modell
@@ -26,22 +24,17 @@ export async function generateText(
   options: { temperature?: number; maxOutputTokens?: number; cachedContent?: string } = {}
 ): Promise<string> {
   try {
-    const model = googleAI.models.getGenerativeModel({ 
-      model: GENERATION_MODEL
-    });
-
-    const generationConfig = {
-      temperature: options.temperature ?? 0.2,
-      maxOutputTokens: options.maxOutputTokens,
-      ...(options.cachedContent ? { cachedContent: options.cachedContent } : {})
-    };
-
-    const result = await model.generateContent({
+    const response = await googleAI.models.generateContent({
+      model: GENERATION_MODEL,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig
+      generationConfig: {
+        temperature: options.temperature ?? 0.2,
+        maxOutputTokens: options.maxOutputTokens,
+        ...(options.cachedContent ? { cachedContent: options.cachedContent } : {})
+      }
     });
 
-    return result.response.text();
+    return response.response.text();
   } catch (error) {
     console.error('Fehler bei der Textgenerierung:', error);
     throw error;
@@ -55,15 +48,19 @@ export async function generateText(
  */
 export async function createEmbedding(text: string): Promise<number[]> {
   try {
-    const model = googleAI.models.getGenerativeModel({
-      model: EMBEDDING_MODEL
+    const response = await googleAI.models.embedContent({
+      model: EMBEDDING_MODEL,
+      contents: text,
+      config: {
+        taskType: "SEMANTIC_SIMILARITY",
+      }
     });
 
-    const embeddingResult = await model.embedContent({
-      content: [{ role: "user", parts: [{ text }] }]
-    });
+    if (!response.embeddings) {
+      throw new Error('Keine embeddings-Eigenschaft in der Antwort gefunden');
+    }
 
-    return embeddingResult.embedding.values;
+    return response.embeddings.values;
   } catch (error) {
     console.error('Fehler bei der Embedding-Erstellung:', error);
     throw error;
@@ -83,6 +80,53 @@ export async function createEmbeddings(texts: string[]): Promise<number[][]> {
     return embeddings;
   } catch (error) {
     console.error('Fehler bei der Batch-Embedding-Erstellung:', error);
+    throw error;
+  }
+}
+
+/**
+ * Führt eine asynchrone Funktion aus und verzögert die Ausführung bei Bedarf,
+ * um eine Ratenbegrenzung einzuhalten
+ * 
+ * @param fn Die auszuführende Funktion
+ * @param delayMs Die Verzögerung in Millisekunden
+ * @param retries Anzahl der Wiederholungsversuche bei 429-Fehlern
+ * @param retryDelayMs Verzögerung zwischen Wiederholungsversuchen
+ * @returns Das Ergebnis der Funktion
+ */
+export async function withRateLimit<T>(
+  fn: () => Promise<T>,
+  delayMs: number = 500,
+  retries: number = 3,
+  retryDelayMs: number = 2000
+): Promise<T> {
+  // Verzögere die Ausführung um die angegebene Zeit
+  await new Promise(resolve => setTimeout(resolve, delayMs));
+  
+  try {
+    // Führe die Funktion aus
+    return await fn();
+  } catch (error) {
+    // Prüfe, ob es sich um einen 429-Fehler (Too Many Requests) handelt
+    if (
+      retries > 0 &&
+      error instanceof Error &&
+      (
+        error.toString().includes('429') ||
+        error.toString().includes('Too Many Requests') ||
+        error.toString().includes('RESOURCE_EXHAUSTED')
+      )
+    ) {
+      console.warn(`Rate limit erreicht, warte ${retryDelayMs}ms und versuche es erneut (${retries} Versuche übrig)...`);
+      
+      // Warte länger bei einem Rate-Limit-Fehler
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+      
+      // Versuche es erneut mit einem Wiederholungsversuch weniger
+      return withRateLimit(fn, delayMs, retries - 1, retryDelayMs * 2);
+    }
+    
+    // Bei anderen Fehlern, wirf den Fehler weiter
     throw error;
   }
 }

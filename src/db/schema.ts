@@ -33,7 +33,6 @@ export class DocumentsStore {
       contextSummary,
       contextualizedContent,
       embedding,
-      bm25Vector,
       metadata
     } = chunk;
 
@@ -42,7 +41,6 @@ export class DocumentsStore {
       throw new Error('Embedding fehlt beim kontextualisierten Chunk');
     }
 
-    // Wir nutzen hier die documents-Tabelle, um den kontextualisierten Chunk zu speichern
     const result = await DbClient.query<{ id: number }>(
       `INSERT INTO documents 
          (source, content, context_summary, embedding, metadata) 
@@ -62,9 +60,12 @@ export class DocumentsStore {
   }
 
   /**
-   * Speichert einen kontextualisierten Chunk mit automatischer Berechnung des BM25-Vektors
+   * Speichert einen kontextualisierten Chunk mit Referenz auf die Elasticsearch-ID
    */
-  static async saveChunkWithBM25(chunk: ContextualizedChunk): Promise<number> {
+  static async saveContextualizedChunkWithESRef(
+    chunk: ContextualizedChunk, 
+    elasticsearchId: string
+  ): Promise<number> {
     const {
       source,
       content,
@@ -79,25 +80,22 @@ export class DocumentsStore {
       throw new Error('Embedding fehlt beim kontextualisierten Chunk');
     }
 
-    // Wir speichern den kontextualisierten Inhalt im content-Feld,
-    // da dieser im SQL-Schema definiert ist
     const result = await DbClient.query<{ id: number }>(
       `INSERT INTO documents 
-         (source, content, context_summary, embedding, metadata) 
+         (source, content, context_summary, embedding, metadata, elasticsearch_id) 
        VALUES 
-         ($1, $2, $3, $4, $5) 
+         ($1, $2, $3, $4, $5, $6) 
        RETURNING id`,
       [
         source,
-        contextualizedContent, // Speichere den kontextualisierten Text im content-Feld
+        content,
         contextSummary,
         `[${embedding.join(',')}]`, // Array als String
-        metadata ? JSON.stringify(metadata) : null
+        metadata ? JSON.stringify(metadata) : null,
+        elasticsearchId
       ]
     );
 
-    // BM25-Vektor wird automatisch von der DB erstellt, wenn wir das richtige Schema haben
-    
     return result.rows[0].id;
   }
 
@@ -112,10 +110,10 @@ export class DocumentsStore {
         WHERE table_name = 'documents'
       `);
       
-      // Prüfe, ob die erwarteten Spalten vorhanden sind, die im setup_db.sql definiert sind
+      // Prüfe, ob die erwarteten Spalten vorhanden sind, die im aktualisierten setup_db.sql definiert sind
       const expectedColumns = [
         'id', 'source', 'content', 'context_summary', 
-        'embedding', 'bm25vector', 'metadata'
+        'embedding', 'metadata', 'elasticsearch_id'
       ];
       
       const foundColumns = result.rows.map(row => row.column_name);
@@ -145,5 +143,17 @@ export class DocumentsStore {
    */
   static async clearAll(): Promise<void> {
     await DbClient.query('DELETE FROM documents');
+  }
+
+  /**
+   * Findet einen PostgreSQL-Datensatz anhand der Elasticsearch-ID
+   */
+  static async findByElasticsearchId(elasticsearchId: string): Promise<any | null> {
+    const result = await DbClient.query(
+      `SELECT * FROM documents WHERE elasticsearch_id = $1`,
+      [elasticsearchId]
+    );
+
+    return result.rows.length > 0 ? result.rows[0] : null;
   }
 }

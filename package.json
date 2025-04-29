@@ -8,8 +8,12 @@
     "build": "mastra build",
     "ingest": "tsx src/scripts/ingest.ts",
     "ingest:watch": "tsx watch src/scripts/ingest.ts",
-    "setup:db": "psql -U postgres -d rag_db -f docker/setup_db.sql",
-    "check:db": "tsx src/scripts/check-db.ts"
+    "setup:db": "psql -h localhost -p 5432 -U postgres -d rag_db -f docker/setup_db.sql",
+    "setup:es": "tsx src/scripts/setup-es.ts",
+    "reset:es": "tsx src/scripts/setup-es.ts --reset",
+    "check:db": "tsx src/scripts/check-db.ts",
+    "docker:up": "cd docker && docker-compose up -d",
+    "docker:down": "cd docker && docker-compose down"
   },
   "keywords": [],
   "author": "",
@@ -18,6 +22,7 @@
   "type": "module",
   "dependencies": {
     "@ai-sdk/google": "^1.2.14",
+    "@elastic/elasticsearch": "^8.10.0",
     "@google/genai": "^0.10.0",
     "@mastra/core": "^0.9.0",
     "@mastra/pg": "^0.3.0",
