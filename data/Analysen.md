@@ -1,0 +1,8 @@
+---
+source: "https://handbuch.sellify.de/aufbau/analysen/"
+---
+Im Bereich "Analysen" haben Sie die Auswahl aus verschiedenen Berichten, mit denen Sie Daten aus sellify per Klick aufrufen können. Die Berichtsauswertung ist das optimale Tool, um verschiedene Unternehmensprozesse und -aktivitäten zu beobachten und gegebenenfalls anzupassen. Wählen Sie dazu den gewünschten Bericht aus der zugehörigen Berichtskategorie aus. sellify erstellt Ihnen automatisch eine strukturierte Übersicht der gewünschten Informationen, die Sie dann in verschiedene Formate exportieren und weitergeben oder weiterbearbeiten können.
+
+![](https://image.jimcdn.com/app/cms/image/transf/dimension=690x10000:format=jpg/path/s42eb4d670de94a65/image/i95d0dd2f94e8cafa/version/1613568624/image.jpg)
+
+Im unteren Bereich haben Sie die Möglichkeit, die auszuwertenden Daten einzuschränken oder zu erweitern. Die Auswahl von Kriterien erfolgt wie im Bereich [Finden](https://handbuch.sellify.de/aufbau/finden/ "Finden") erläutert. Des Weiteren steht Ihnen hier die Option "Berichtsfavorit erstellen" zur Verfügung, mit der Sie mit Kriterien verfeinerte Berichte abspeichern und so zum wiederholten Aufruf für sich oder Kollegen hinterlegen können. Weitere Erläuterungen zum Speichern sowie der Sichtbarkeit von Favoriten finden Sie auch im Bereich [Suchfavoriten](https://handbuch.sellify.de/funktionen/suchfavoriten/ "Suchfavoriten").
